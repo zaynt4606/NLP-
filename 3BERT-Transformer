@@ -1,0 +1,299 @@
+## BERT类
+
+<u>1、BERT的基本任务</u>   BERT的两个预训练任务分别有啥优缺点，后续有啥改进工作
+
+mask language model 和 next sentence predict
+
+
+
+<u>2、BERT 的MASK方式的优缺点？</u>
+
+mask language model的遮盖方式：选择15%的token进行遮盖，再选择其中80%进行mask，10%进行随机替换，10%不变
+
+优点：
+
+1）被随机选择15%的词当中以10%的概率用任意词替换去预测正确的词，相当于文本纠错任务，为BERT模型赋予了一定的文本纠错能力；
+
+2）被随机选择15%的词当中以10%的概率保持不变，缓解了finetune时候与预训练时候输入不匹配的问题（预训练时候输入句子当中有mask，而finetune时候输入是完整无缺的句子，即为输入不匹配问题）。但是没有解决这个问题。
+
+缺点：
+
+1）针对有两个及两个以上连续字组成的词，随机mask字割裂了连续字之间的相关性，使模型不太容易学习到词的语义信息。主要针对这一短板，因此google此后发表了BERT-WWM，国内的哈工大联合讯飞发表了中文版的BERT-WWM。
+
+2）为了解决OOV的问题，我们通常会把一个词切分成更细粒度的WordPiece。BERT在Pretraining的时候是随机Mask这些WordPiece的，这就可能出现只Mask一个词的一部分的情况
+
+<u>3、Bert的构成</u>：由12层Transformer Encoder构成
+
+<u>4、Transformer encoder的组成</u>：self-Attention和feed forward组成 中间穿插残差网络
+
+残差网络的作用：缓解层数加深带来的信息损失，采用两个线性变换激活函数为relu，同等层数的前提下残差网络也收敛得更快
+
+
+
+<u>5、self-Attetion的组成和作用？</u>
+
+1）对每一个token分别与三个权重矩阵相乘，生成q,k,v三个向量，维度是64
+
+<img src="C:\Users\HP\Desktop\read\面试\NLP面经\pic\self-attention.jpg" alt="self-attention" style="zoom: 67%;" />
+
+2）计算得分，以句子中的第一个词为例，拿输入句子中的每个词的q和其他词的k运算得到attention score，这个分数决定了在编码第一个词的过程中有多重视句子的其他部分。再将score乘上每个token的v得到抽取信息完毕的向量(QK在这之前除以根号dk)。
+
+$Attention(Q,K,V)=softmax(\frac{QK^T}{\sqrt(d_k)})V$    $d_k$ 是k_dim，$softmax(\frac{QK^T}{\sqrt(d_k)})$ 就是Attention Score矩阵
+
+3）将分数除以键向量维度的平方根（根号dk）也就是进行scaling，这可以使梯度下降更稳定，避免因为梯度过小造成模型参数更新的停滞。因为$\alpha_{ij^`}^*$ 相对于其他结果过大或过小时都会造成softmax函数的偏导趋近于0(梯度过低)。
+
+$\alpha_{ij^`}^*=qk^T=\Sigma_{j=1}^{d_k}q_{ij}k_{ij}$ 
+
+<u>**为什么要除以根号dk？，Q可不可以强制等于K**</u>
+
+假设q和k中的向量都服从高斯分布，即均值为0，方差为1，那可qk点积都的矩阵均值为0，方差为dk，此时若直接做softmax，根据公式，分母是ex的相加，分母较大，会导致softmax的梯度变小，参数更新困难。
+
+给定一组数组成的向量，softmax先将这组数的差距拉大（由于exp函数），然后归一化。它实质做的是一个soft版本的arg max操作，得到的向量接近一个one-hot向量（接近程度根据这组数的数量级有所不同）。
+
+Q和K初始为不同的权重是为了解决可能输入句长与输出句长不一致的问题，直接用K和K点乘attention score矩阵，是一个类似单位矩阵的attention是一个对称矩阵，self-attention就退化成了point-wise线性映射，泛化能力很差。
+
+<u>有其他方法不用除以$\sqrt{d_k}$ 吗？</u>
+
+有，只要能做到每层参数的梯度保持在训练敏感的范围内，不要太大，不要太小。那么这个网络就比较好训练。方式有，比较好的初始化方法，类似于google的T5模型，就在初始化把这个事情干了。
+
+[Transformer学习笔记二：Self-Attention（自注意力机制）](https://zhuanlan.zhihu.com/p/455399791)
+
+4）softmax将分数归一化，表示每个单词对编码当下位置的贡献
+
+5）用v乘softmax分数，希望关注语义上相关的单词，并弱化不相关的词
+
+6）对第5步的各个位置求和
+
+
+
+<u>6、multi-headed attetion的作用</u>
+
+多头机制类似于“多通道”特征抽取，self attention通过attention mask动态编码变长序列，解决长距离依赖（无位置偏差）、可并行计算；
+
+- 多头机制为什么有效？
+  - 类似于CNN中通过多通道机制进行特征选择；
+  - Transformer中先通过切头（spilt）再分别进行Scaled Dot-Product Attention，可以使进行点积计算的维度d不大（防止梯度消失），同时缩小attention mask矩阵。
+
+
+
+<u>7、Feed-Forward Networks</u>
+
+- FFN 将每个位置的Multi-Head Attention结果映射到一个更大维度的特征空间，然后使用ReLU引入非线性进行筛选，最后恢复回原始维度。
+- Transformer在抛弃了 LSTM 结构后，FFN 中的 ReLU成为了一个主要的提供非线性变换的单元。
+
+
+
+<u>8、BERT、Transformer为什么用layer normalization层标准化？</u>
+
+![batch-normalization](C:\Users\HP\Desktop\read\面试\NLP面经\pic\batch-normalization.jpg)
+
+batch normalization
+
+![layer-nomalization](C:\Users\HP\Desktop\read\面试\NLP面经\pic\layer-nomalization.jpg)
+
+layer normalization
+
+Self-Attention的输出会经过Layer Normalization，为什么选择Layer Normalization而不是Batch Normalization？
+
+**Batch Normalization是对每个Batch的每一列做normalization，相当于是对batch里相同位置的字或者单词embedding做归一化，Layer Normalization是Batch的每一行做normalization，相当于是对每句话的embedding做归一化**。显然，LN更加符合我们处理文本的直觉。
+
+transformer为什么不用batch normalization：1.每条数据不定长，BN每条数据中会有好多位置又padding补充的0元素，BN会是的整个数据的均值降低，影响其他样本非0参数的计算。LN对每一条数据归一化不会包含padding的0，数据分布不会改变；2.Transformer的模型比较大，batch size拉不大，容易变得不稳定
+
+图像处理中可以用BN，因为图像的每一个像素点都有值，没有padding带来的0问题。
+
+常用的标准化：Batch Normalization，Layer Normalization，Group Normalization(BN和LN之间)，Instance Normalization等
+
+
+
+<u>9、BERT基于“字输入”还是“词输入”好？</u>
+
+- 如果基于“词输入”，会出现OOV（Out Of Vocabulary词表外未定义词）问题，会增大标签空间，需要利用更多语料去学习标签分布来拟合模型。
+- 随着Transfomer特征抽取能力，分词不再成为必要，词级别的特征学习可以纳入为内部特征进行表示学习。
+
+
+
+<u>10、BERT的三个输入embedding为什么可以相加？</u>
+
+bert中的三个Embedding包括位置Position Embedding、符号Token Embedding、片段Segment Embedding。Embedding的数学本质，就是以one hot为输入的单层全连接，Embedding层就是以one hot为输入、中间层节点为字向量维数的全连接层！而这个全连接层的参数，就是一个“字向量表”。将token,position,segment三者都用one hot表示，然后concat起来，然后才去过一个单层全连接，等价的效果就是三个Embedding相加。
+
+从矩阵运算的数学层面解释。大矩阵的乘法等于将矩阵切分成小的矩阵分别进行乘法，然后结果相加。
+
+<u>为什么要用到position embedding</u>
+
+增强位置上的表达能力，transformer对位置不敏感，需要显示标示。让模型能够学习到词语在语句中不同位置时可能的不同含义。
+
+
+
+<u>11、bert预训练的batch_size为256，roberta为2K</u>
+
+
+
+<u>12、transformer的编码器与解码器</u>
+
+<img src="C:\Users\HP\Desktop\read\面试\NLP面经\pic\transformer.jpg" alt="transformer" style="zoom:50%;" />
+
+解码器的block由masked multi-head attention和一个encoder-decoder的attention组成。
+
+其中masked multi-head attention部分用于将未来的信息mask掉，因为在生成的时候是无法知道未来的信息的，即当前词无法看到后面的词
+
+Decoder的第二个部分是一个encoder和decoder的attention，这一部分可以看成解码器在用编码器的输出信息来计算当前解码应该输出什么
+
+
+
+<u>13、bert预训练任务的损失函数</u>
+
+两个任务是联合学习，可以使得 BERT 学习到的表征既有 token 级别信息，同时也包含了句子级别的语义信息。
+
+bert的损失函数组成：
+
+- 第一部分是来自 Mask-LM 的单词级别分类任务；(mask language modle)
+- 另一部分是句子级别的分类任务；(next sentence predict)
+
+损失函数：$L(\theta,\theta_1,\theta_2)=L_1(\theta,\theta_1)+L_2(\theta,\theta_2)$  
+
+$\theta$ ：BERT中Encoder部分的参数；
+
+$\theta_1$ ：Mask-LM任务中在Encoder上所接的输出层中的参数；
+
+$\theta_2$ ：句子预测任务中在Encoder接上的分类器参数；
+
+第一部分的损失函数中如果mask的词集合是M，因为它是一个词典大小|V| 上的多分类问题，所用的损失函数叫做负对数似然函数(最小化，等价于最大化对数似然函数)
+
+$L_1(\theta,\theta_1)=-\Sigma_{i=1}^Mlog \ p(m=m_i|\theta,\theta_1),m_i\in[1,2,...,|V|]$
+
+第二部分损失函数中句子预测任务中也是分类问题的损失函数
+
+$L_2(\theta,\theta_2)=-\Sigma_{j=1}^Nlog \ p(n=n_i|\theta,\theta_2),m_i\in[IsNext,NotNext]$
+
+两个任务联合学习的损失函数
+
+$L(\theta,\theta_1,\theta_2)=-\Sigma_{i=1}^Mlog \ p(m=m_i|\theta,\theta_1)-\Sigma_{j=1}^Nlog \ p(n=n_i|\theta,\theta_2)$ 
+
+
+
+<u>14.BERT怎么做分词</u>        (Basic Tokenizer和WordPiece Tokenizer)
+
+`BasicTokenizer` 和 `WordpieceTokenizer`，另外一个 `FullTokenizer` 是这两个的结合：先进行 `BasicTokenizer` 得到一个分得比较粗的 token 列表，然后再对每个 token 进行一次 `WordpieceTokenizer`，得到最终的分词结果。
+
+
+
+<u>15、为什么BERT要用自己学习的位置编码</u>
+
+训练充分的情况下，可学习的比三角函数式的的表示能力要更强）
+
+ICLR 2021 中一篇On Position Embeddings in BERT，系统性地分析了不同Embedding方式对模型的影响，总结出了Position Embedding 的三种性质，
+
+**平移不变性**（translation invariance）、**单调性**（monotonicity），**对称性**（ symmetry）
+
+提出了两种新的EmbeddingPosition Embedding的方式，
+
+并从定性和定量两个方面对各种Position Embedding进行分析。
+
+
+
+<u>16、BERT的位置编码有啥缺点，还有哪些位置编码</u>
+
+绝对位置APE并不能很好的表示距离和方向，后面有相对位置编码RPE、复数位置编码以及加入树形的位置编码等，参考tener，transformer-xl，t5，deberta，tupe和roformer等等
+
+
+
+<u>17、BERT的FFN为啥要用GeLU激活函数</u>
+
+ReLU拥有非线性拟合的能力。而同时为了避免其过拟合，又需要通过加入正则化来提高其泛化能力，其中，Dropout就是一种主流的正则化方式，而zoneout是Dropout的一个变种。GELU通过来自上面三者的灵感，希望在激活中加入正则化的思想。GELU也是通过将输入乘上0或1来实现这个功能，但是输入是乘以0还是1，**是在同时取决于输入自身分布的情况下随机选择的。**换句话说，是0还是1取决于当前的输入有多大的概率大于其余的输入。保留了概率性，同时也保留了对输入的依赖性。
+
+
+
+## **Transformer**
+
+<u>1、为什么要用多头</u>
+
+1.增强了模型输入处理的并行性，增强网络容量；2.对输入的Q、K、V进行多次不同的映射，相当于把句子投影到不同的子空间中，多个空间学习多种pattern，增强网络表达能力。
+
+即增强网络的容量和表达能力。
+
+
+
+<u>2、self-attention一定要这样表达吗？</u>
+
+不需要，能刻画相关性，相似性等建模方式都可以。最好速度快，模型好学，表达能力够。
+
+
+
+<u>3、transformer计算attention为什么点乘而不是加法，计算复杂度有什么区别？</u>
+
+为了计算更快。矩阵加法在加法这一块的计算量确实简单，但是作为一个整体计算attention的时候相当于一个隐层，整体计算量和点积相似。在效果上来说，从实验分析，两者的效果和dk相关，dk越大，加法的效果越显著。
+
+
+
+<u>4、为什么要有FFN模块</u>
+
+因为激活函数Relu为整个网络提供了非线性的学习能力，要用FFN增加模型的非线性学习能力。
+
+
+
+<u>5、Transformer和BERT的位置编码有啥区别</u>
+
+transformer用三角函数式向量——正弦位置编码、余弦位置编码，是绝对位置的函数式编码，因为self-attention这种正余弦函数由于点乘会有相对位置信息存在但是没有方向性，通过权重矩阵的映射之后信息可能会消失。transformer的位置编码是一个算出来的值，是固定的只能标记这个位置不能标记这个位置有什么用。
+
+BERT用学习位置向量learned position embedding是绝对位置的参数式编码，和相应位置上的词向量进行相加而不是拼接。lpe是一个可以学习的embedding不仅可以标注位置还能学习这个位置的作用。
+
+
+
+<u>6、残差结构及意义——Add</u>
+
+防止网络层数过深带来的梯度消失和网络退化问题
+
+
+
+<u>7、哪个block中更耗时，哪个更占显存</u>
+
+序列短的时候FFN(feed-forword network)耗时，长的时候MHA(multi-head attention)耗时；
+
+FFN更占显存
+
+
+
+8、<u>transformer的LayerNorm有哪些，有什么用</u>
+
+post-norm和pre-norm，让神经网络各层参数输入的数据分布变好，数值进入梯度敏感区间，可以防止梯度消失，让模型好训练。
+
+
+
+<u>9、计算attention score的时候如何对padding做mask操作？</u>
+
+将pad的attention_score加上-np.inf，过softmax后会变0.
+
+因为padding 都是0，e0=1, 但是softmax的函数，也会导致为padding的值占全局一定概率，mask就是让这部分值取无穷小，让他在softmax之后基本也为0，不去影响非attention socore的分布
+
+
+
+<u>10、怎样解决曝光偏差</u>
+
+训练时以一定的概率用上一时刻的输出、NAR、占位符生成、基于负梯度构建对抗样本
+
+
+
+<u>11、transformer加速</u>
+
+NAR，知识蒸馏、剪枝、动态退出、稀疏注意力、线性注意力等
+
+
+
+<u>12、attention瓶颈</u>
+
+low rank，talking-head等
+
+
+
+<u>13、transformer中只要encoder可以吗</u>
+
+encoder可以当做一个特征提取器，生成的特征向量可以做很多事情，可以加一个全连接层FC做分类。还可以当成词向量、句向量。只有在生成式的任务中需要用到decoder部分。
+
+<u>14、transformer在哪些地方做了权重共享？</u>
+
+（1）Encoder和Decoder间的Embedding层权重共享；
+
+（2）Decoder中Embedding层和FC层权重共享。
+
+对于(1)中英语等语言有很多相同的subword可以共享类似的语义，中英这样相差较大的语系，语义共享可能不大，而且共用词表会使得词表数量增大，增加softmax计算时间，实际中是否共享还能看具体情况。
+

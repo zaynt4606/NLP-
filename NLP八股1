@@ -1,0 +1,164 @@
+简历深挖
+
+### 实体识别部分
+
+### RoBERTa+BiLSTM+Attention+CRF
+
+- RoBERTa用于在当前数据集finetune输出WordEmbedding
+- 为什么加BiLSTM？
+  
+    因为BERT使用的是绝对位置编码，相当于一部分削弱了位置信息，在序列标注任务中位置信息是有必要的，而且方向信息也是有必要的，所以我们需要用BiLSTM去学习观测序列上的依赖关系
+    
+- Attention的作用
+  
+    经过BiLSTM的隐向量已包含丰富的上下文特征信息，但这些特征具有相同的权重，在区分实体类别时会造成较大误差，字符之间的相关性利用权重at得到体现，通过字符的相关性对语句进行词边界划分
+    
+- CRF的作用
+  
+    用于标签约束，CRF的特征函数是状态矩阵和转移矩阵，状态矩阵来自于BiLSTM的输出，即位置对应标签的分数，转移矩阵来自于CRF层是CRF层的参数。
+    
+    CRF的学习函数是去学习CRF特征函数的权重
+    
+    CRF损失函数由两部分组成，真实路径的分数 和 所有路径的总分数。真实路径的分数应该是所有路径中分数最高的。在训练过程中，BiLSTM-CRF模型的参数值将随着训练过程的迭代不断更新，使得真实路径所占的比值越来越大。
+    
+    $LossFunction=\frac{P_{RealPath}}{P_{1}+P_{2}+...+P_{N}}$
+    
+    预测算法采用维特比算法，设定dp去找当前时刻t的最优路径
+    
+    为什么不用HMM？
+    
+    **HMM的假设**：1）其次马尔科夫假设：HMM的任意时刻t的某个状态只依赖于前一时刻的状态，与其他时刻的状态及观测无关，也与时刻t无关。2）观测独立假设：任一时刻的观测只依赖于该时刻的马尔科夫链状态，与其他观测状态无关。
+    
+    crf可以弥补hmm假设，hmm只能局部归一化，而crf可以全局归一化
+    
+
+煤矿实体30972重复，真正用到图谱里的有17690个节点，定义了2500种关系，3113个不重复实体
+
+训练集4086条、验证集1139条、测试集1377条
+
+89.41%	86.37%	87.87%
+
+**数据变换**
+
+bert层的输出  torch.Size([batch_size,seq_len,hidden_size]) --- [8,128,768]
+
+bilstm层的输出  
+
+self.birnn = nn.LSTM(input_size=config.hidden_size, hidden_size=rnn_dim, num_layers=1, bidirectional=True, batch_first=True)
+
+[8,128,768] --> [8,128,256]  shape=(batch_size,seq_length,num_directions*hidden_size)
+
+sequence_output, _ = self.birnn(sequence_output)
+
+全连接层:
+      self.hidden2tag = nn.Linear(out_dim, config.num_labels)
+
+ CRF:
+      self.crf = CRF(config.num_labels, batch_first=True)
+
+其他方案：
+
+BERT-MRC，基于阅读理解的实体识别，实现对所有类别进行定义形成query，对应的answer就是实体，利用bert的nsp在句子前加入问题。
+
+span的选择
+
+有两种策略，一种是两个n分类器，n为句子的长度，来预测开始和结束的索引，因为softmax分类器会选择最大可能性概率的结果作为实体的开始和结束。这样做的缺陷是在一句话中，每个问题仅会提取出至多一个实体。另一种方法是，用两个二分类器，来预测每一个token是否是一个实体的开始或者结束，这样的话就可以在一句话中一个问题对应多个实体。
+
+### 关系抽取
+
+可以简单说一下方案，pipeline式抽取和联合抽取
+
+父类-核心概念    包含
+父类-灾害事件    包含
+核心概念-系统类   系统
+核心概念-人员类    工种
+核心概念-设备类    设备
+核心概念-参数指标类  参数指标
+核心概念-位置类    位置
+人员类-灾害事件    引发事故
+设备类-灾害事件    引发事故
+人员类-设备类    操作
+设备类-位置类    安装点
+参数指标类-设备类    评价
+位置类-系统    安装点
+
+论文：Relational Memory-based Extraction for Relational Triples
+
+主要分为三个模块：1）RSE(Relation-speciﬁc Subject Extraction), 2)RM (Relational Memory) moduleconstruction  3) OE (Object Extraction)
+
+解决的问题：1）嵌套实体识别  2）实体对重叠三元组抽取 3） 但实体重叠三元组抽取 
+
+bert Embedding后是一个512*768的矩阵，要对每一个位置进行二分类，全连接转成512*100，reshape成512*50*2的矩阵，对每个token进行二分类，此时得到可得到两个向量头实体的起始位置和结束位置，对应实体的语义向量用头实体+尾实体的embeding，另外假如有50个关系，关系矩阵随机初始化得到一个512*50的矩阵，实体标注后，在关系矩阵对应行找，如果有1那就代表此实体对应该关系，此时已经找到头实体和对应关系，尾实体和头实体的预测相似，每次只传入一个头实体，去找尾实体的开始和结束位置，则此时便找到头尾实体及其对应关系
+
+
+
+### 聚类
+
+采用的kmeans的方式，因为一开始只有标注没有类别，想利用这种无监督的方式去看看能不能聚到一起。
+
+keams的过程：
+
+1. 首先输入k的值，即我们希望将数据集经过聚类得到k个分组。
+2. 从数据集中随机选择k个数据点作为初始大哥（质心，Centroid）
+3. 对集合中每一个小弟，计算与每一个大哥的距离（距离的含义后面会讲），离哪个大哥距离近，就跟定哪个大哥。
+4. 这时每一个大哥手下都聚集了一票小弟，这时候召开人民代表大会，每一群选出新的大哥（其实是通过算法选出新的质心）。
+5. 如果新大哥和老大哥之间的距离小于某一个设置的阈值（表示重新计算的质心的位置变化不大，趋于稳定，或者说收敛），可以认为我们进行的聚类已经达到期望的结果，算法终止。
+6. 如果新大哥和老大哥距离变化很大，需要迭代3~5步骤。
+
+KNN k临近值算法
+
+对未知类别属性的数据集中的每个点依次执行以下操作:
+(1) 计算已知类别数据集中的点与当前点之间的距离;
+(2) 按照距离递增次序排序;
+(3) 选取与当前点距离最小的k个点;
+(4) 确定前k个点所在类别的出现频率;
+(5) 返回前k个点出现频率最高的类别作为当前点的预测分类。
+
+## 分类任务
+
+0.784970|0.864695|0.822906
+
+## 专利
+
+用IDCNN代替CNN
+
+CNN的缺陷：尽管传统的CNN有明显的计算优势，但是传统的CNN在经过卷积之后，末梢神经元只能得到输入文本的一小部分信息，为了获取上下文信息，需要加入更多的卷积层，导致网络越来越深，参数越来越多，容易发生过拟合。
+
+IDCNN的改进：dilated convolutions，中文意思大概是“空洞卷积”。正常CNN的filter，都是作用在输入矩阵一片连续的位置上，不断sliding做卷积，接着通过pooling来整合多尺度的上下文信息，这种方式会损失分辨率。既然网络中加入pooling层会损失信息，降低精度。那么不加pooling层会使感受野变小，学不到全局的特征。如果我们单纯的去掉pooling层、扩大卷积核的话，这样纯粹的扩大卷积核势必导致计算量的增大，此时最好的办法就是Dilated Convolutions（扩张卷积或叫空洞卷积）。具体使用时，dilated width会随着层数的增加而指数增加。这样随着层数的增加，参数数量是线性增加的，而receptive field却是指数增加的，可以很快覆盖到全部的输入数据。在IDCNN中，通过重复使用自膨胀卷积的模块，来达到共享参数的目的以防止过拟合。对于IDCNN的输出也可以使用维特比算法来进行序列标签的预测。
+
+## 知识图谱构建方法
+
+- 知识建模：实体定义、关系定义、事件定义等，可以采用传统的rdf、owl等表示方法进行，也可采用现在比较常用的属性图进行，这两者的主要区别就是rdf基本都是通过三元组进行表示，而属性图可以在实体上有属性的概念。
+- 知识获取：知识获取根据目标数据类型（包括**结构化数据、非结构化数据、半结构化数据**）不同采用的技术也有所不同，结构化数据比较容易一些，采用一些ETL工具等等就可以高质量的完成；半结构化数据可以采用**爬虫技术+包装器+正则表达式**技术进行，非结构化数据主要是通过自然语言处理的技术进行，包括对文本数据中的**实体识别、关系识别、事件识别**等。
+- 知识融合：知识融合又分为模式层的融合以及数据层的融合，模式层的融合主要包括概念、概念的上下位、概念的属性这些统一；数据层的融合主要是将不同数据来源的数据的相同实体的不同表达形式进行融合，包括实体的合并、实体属性与关系的合并等。这一步工作涉及的技术有**实体对齐、指代消解**等。
+- 知识存储：
+
+## SQL
+
+```sql
+#!/bin/bash
+begin_dt=20210419
+end_dt=20210509
+hive -e "select uid,count(distinct mid) as send_num
+from universal_material_db
+where dt>=${begin_dt} and dt<=${end_dt}
+group by uid" > uid_send_num
+hive -e "select uid,count(distinct mid) as pt_num
+from universal_material_db
+where dt>=${begin_dt} and dt<=${end_dt} and pic_num>=1
+group by uid" > uid_pt_num
+hive -e "add file deal_pic_ocr.py;
+select transform(uid,mid,son_data,dt) using 'python deal_pic_ocr.py' as (uid,mid,pic_num,high_ocr)
+from universal_material_db
+where dt>=${begin_dt} and dt<=${end_dt}" > uid_pic_ocr
+
+hive -e "select a.uid,c.tag_id,count(distinct a.rootmid) from
+	(select distinct uid,rootmid from mds_bhv_pubblog where dt>=20201201 and dt<=20210107 and is_transmit=1) a
+	join
+	(select distinct mid from new_mblog_mannual_mark_result where deleted=0 and to_id_type=2 and dubious=0 and dislike=0 and risk=0 and low_quality=0 and dt>=20201201 and dt<=20201230) b
+	on a.rootmid=b.mid
+	join
+	(select distinct mid,tag_id from mblog_newtags_recall_history_new where dt>=20201201 and dt<=20210107 and tag_id like '1042015:newTagCategory%') c
+	on a.rootmid=c.mid group by a.uid,c.tag_id" > fenzi_firstag
+```
+
